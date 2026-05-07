@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  lint-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dev tools and minimal runtime deps
+        run: |
+          python -m pip install --upgrade pip
+          # CPU-only torch for cheaper CI runs.
+          pip install --index-url https://download.pytorch.org/whl/cpu \
+              "torch>=2.1.0" "torchvision>=0.16.0"
+          pip install \
+              "diffusers>=0.27.0" \
+              "transformers>=4.38.0" \
+              "accelerate>=0.27.0" \
+              "safetensors>=0.4.0" \
+              "huggingface_hub>=0.20.0" \
+              "trimesh>=4.0.0" \
+              "Pillow>=10.0.0" \
+              "numpy>=1.24.0,<2.0.0" \
+              "gradio>=4.20.0" \
+              "einops>=0.7.0"
+          pip install "ruff>=0.4.0" "pytest>=8.0.0"
+
+      - name: Ruff
+        run: ruff check .
+
+      - name: Pytest (smoke imports + refiner forward pass)
+        run: pytest -q
