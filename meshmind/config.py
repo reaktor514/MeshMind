@@ -23,12 +23,26 @@ def _env_float(name: str, default: float) -> float:
     return float(raw) if raw else default
 
 
+def _env_bool(name: str, default: bool) -> bool:
+    raw = os.environ.get(f"MESHMIND_{name}")
+    if raw is None:
+        return default
+    return raw.lower() in {"1", "true", "yes", "on"}
+
+
+_FAST = _env_bool("FAST", False)
+
+
 @dataclass
 class MeshMindConfig:
     """Configuration container shared across all MeshMind submodules.
 
     Each weight identifier resolves to a public Hugging Face Hub repo so the
     pipeline works out of the box once weights are downloaded.
+
+    Set ``MESHMIND_FAST=1`` to clamp inference defaults to CPU-friendly values
+    (smaller image size, fewer mesh steps, lower frame size).  Individual
+    ``MESHMIND_*`` env vars still win over ``MESHMIND_FAST``.
     """
 
     # 2D image generation backbones
@@ -40,13 +54,32 @@ class MeshMindConfig:
     i2m_model_id: str = field(default_factory=lambda: _env("I2M_MODEL", "openai/shap-e-img2img"))
 
     # Inference defaults
-    image_size: int = field(default_factory=lambda: _env_int("IMAGE_SIZE", 512))
+    image_size: int = field(
+        default_factory=lambda: _env_int("IMAGE_SIZE", 256 if _FAST else 512)
+    )
     image_steps: int = field(default_factory=lambda: _env_int("IMAGE_STEPS", 4))
     image_guidance: float = field(default_factory=lambda: _env_float("IMAGE_GUIDANCE", 0.0))
 
-    mesh_steps: int = field(default_factory=lambda: _env_int("MESH_STEPS", 64))
+    mesh_steps: int = field(default_factory=lambda: _env_int("MESH_STEPS", 16 if _FAST else 64))
     mesh_guidance: float = field(default_factory=lambda: _env_float("MESH_GUIDANCE", 15.0))
-    mesh_resolution: int = field(default_factory=lambda: _env_int("MESH_RESOLUTION", 128))
+    mesh_resolution: int = field(
+        default_factory=lambda: _env_int("MESH_RESOLUTION", 64 if _FAST else 128)
+    )
+
+    # Post-processing defaults (applied when callers pass ``cleanup=True``).
+    cleanup_drop_floaters: bool = field(default_factory=lambda: _env_bool("CLEANUP_DROP_FLOATERS", True))
+    cleanup_floater_min_face_fraction: float = field(
+        default_factory=lambda: _env_float("CLEANUP_FLOATER_MIN_FACE_FRACTION", 0.01)
+    )
+    cleanup_smooth_iters: int = field(default_factory=lambda: _env_int("CLEANUP_SMOOTH_ITERS", 3))
+    cleanup_smooth_lamb: float = field(default_factory=lambda: _env_float("CLEANUP_SMOOTH_LAMB", 0.5))
+    cleanup_fix_normals: bool = field(default_factory=lambda: _env_bool("CLEANUP_FIX_NORMALS", True))
+    cleanup_fill_holes: bool = field(default_factory=lambda: _env_bool("CLEANUP_FILL_HOLES", False))
+    cleanup_target_faces: int | None = field(
+        default_factory=lambda: int(os.environ["MESHMIND_CLEANUP_TARGET_FACES"])
+        if os.environ.get("MESHMIND_CLEANUP_TARGET_FACES")
+        else None
+    )
 
     # Custom refiner (our own from-scratch architecture)
     refiner_dim: int = field(default_factory=lambda: _env_int("REFINER_DIM", 256))

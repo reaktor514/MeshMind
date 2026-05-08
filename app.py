@@ -4,15 +4,18 @@ Run with::
 
     python app.py
 
-The UI exposes two tabs:
+The UI exposes three tabs:
 
 * **2D Generation** — text + optional reference image -> PNG.
 * **3D Generation** — text + optional reference image -> ``.obj`` / ``.glb``.
+* **Smart 3D** — text -> 2D image -> 3D mesh (better for complex prompts).
 """
 
 from __future__ import annotations
 
+import os
 import tempfile
+import threading
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -34,6 +37,30 @@ def _pipeline() -> MeshMindPipeline:
     return _PIPE
 
 
+def _warmup_pipeline_async() -> None:
+    """Pre-load the SD-Turbo backbone in a background thread.
+
+    Without this, the very first click on the Gradio site pays the model load
+    cost (~5-10 s on warm cache, ~60 s cold).  We start that work as soon as
+    the server boots so the first request lands on a hot pipeline.
+
+    Disable with ``MESHMIND_NO_WARMUP=1`` (e.g. for unit tests / CI).
+    """
+    if os.environ.get("MESHMIND_NO_WARMUP", "").lower() in {"1", "true", "yes", "on"}:
+        return
+
+    def _run() -> None:
+        try:
+            pipe = _pipeline()
+            pipe.t2i._load()  # pyright: ignore[reportPrivateUsage]
+        except Exception:
+            # Warmup failures must not crash the app — the on-click path will
+            # surface any real loading error to the user.
+            pass
+
+    threading.Thread(target=_run, name="meshmind-warmup", daemon=True).start()
+
+
 def _safe_int(value, default=None):  # noqa: ANN001
     if value in (None, "", 0):
         return default
@@ -50,6 +77,13 @@ def _safe_float(value, default=None):  # noqa: ANN001
         return float(value)
     except (TypeError, ValueError):
         return default
+
+
+def _export_mesh(mesh, fmt: str) -> str:  # noqa: ANN001
+    suffix = "." + fmt.lower()
+    out = Path(tempfile.mkdtemp(prefix="meshmind_")) / f"meshmind_output{suffix}"
+    mesh.export(out)
+    return str(out)
 
 
 def generate_image(
@@ -84,6 +118,7 @@ def generate_mesh(
     guidance,  # noqa: ANN001
     resolution,  # noqa: ANN001
     fmt: str,
+    cleanup: bool,
 ):  # noqa: ANN201
     if reference is None and (not prompt or not prompt.strip()):
         raise gr.Error("Введи текстовый промпт или загрузи референс-картинку")
@@ -96,12 +131,41 @@ def generate_mesh(
         steps=_safe_int(steps),
         guidance=_safe_float(guidance),
         resolution=_safe_int(resolution),
+        cleanup=bool(cleanup),
     )
+    out = _export_mesh(mesh, fmt)
+    return out, out
 
-    suffix = "." + fmt.lower()
-    out = Path(tempfile.mkdtemp(prefix="meshmind_")) / f"meshmind_output{suffix}"
-    mesh.export(out)
-    return str(out), str(out)
+
+def smart_generate_mesh(
+    prompt: str,
+    negative_prompt: str,
+    seed,  # noqa: ANN001
+    image_steps,  # noqa: ANN001
+    mesh_steps,  # noqa: ANN001
+    mesh_guidance,  # noqa: ANN001
+    resolution,  # noqa: ANN001
+    fmt: str,
+    cleanup: bool,
+):  # noqa: ANN201
+    if not prompt or not prompt.strip():
+        raise gr.Error("Введи текстовый промпт")
+    pipe = _pipeline()
+    seed_val = _safe_int(seed)
+    mesh, image = pipe.smart_text_to_mesh(
+        prompt=prompt.strip(),
+        negative_prompt=(negative_prompt or "").strip() or None,
+        image_seed=seed_val,
+        image_steps=_safe_int(image_steps),
+        seed=seed_val,
+        steps=_safe_int(mesh_steps),
+        guidance=_safe_float(mesh_guidance),
+        resolution=_safe_int(resolution),
+        cleanup=bool(cleanup),
+        return_image=True,
+    )
+    out = _export_mesh(mesh, fmt)
+    return image, out, out
 
 
 def build_app() -> gr.Blocks:
@@ -184,6 +248,10 @@ def build_app() -> gr.Blocks:
                         choices=["glb", "obj", "ply", "stl"],
                         value="glb",
                     )
+                    mesh_cleanup = gr.Checkbox(
+                        label="Post-processing (выкинуть плавающие куски, сгладить, чинить нормали)",
+                        value=True,
+                    )
                     mesh_btn = gr.Button("Сгенерировать 3D", variant="primary")
                 with gr.Column(scale=1):
                     mesh_viewer = gr.Model3D(label="Превью меша", clear_color=[0.07, 0.07, 0.09, 1])
@@ -199,18 +267,84 @@ def build_app() -> gr.Blocks:
                     mesh_guidance,
                     mesh_resolution,
                     mesh_format,
+                    mesh_cleanup,
                 ],
                 outputs=[mesh_viewer, mesh_file],
+            )
+
+        with gr.Tab("Smart 3D (text → image → mesh)"):
+            gr.Markdown(
+                "ShapE плохо тянет сложные / OOD-промпты (фэнтези, монстры). "
+                "Этот режим сначала генерирует 2D-картинку через SD-Turbo, "
+                "а потом скармливает её ShapE-img2img — для всего, что сложнее «яблока», "
+                "заметно чище."
+            )
+            with gr.Row():
+                with gr.Column(scale=1):
+                    smart_prompt = gr.Textbox(
+                        label="Промпт",
+                        placeholder="a terrifying horror monster, sharp teeth, glowing eyes",
+                        lines=2,
+                    )
+                    smart_negative = gr.Textbox(
+                        label="Negative prompt",
+                        placeholder="low quality, blurry, watermark, text",
+                        lines=1,
+                    )
+                    with gr.Row():
+                        smart_seed = gr.Number(label="Seed", value=None, precision=0)
+                        smart_image_steps = gr.Number(label="Image steps", value=4, precision=0)
+                        smart_mesh_steps = gr.Number(label="Mesh steps", value=64, precision=0)
+                        smart_mesh_guidance = gr.Number(label="Mesh guidance", value=15.0)
+                    smart_resolution = gr.Slider(
+                        label="Resolution",
+                        minimum=64,
+                        maximum=256,
+                        step=32,
+                        value=128,
+                    )
+                    smart_format = gr.Radio(
+                        label="Формат",
+                        choices=["glb", "obj", "ply", "stl"],
+                        value="glb",
+                    )
+                    smart_cleanup = gr.Checkbox(
+                        label="Post-processing меша",
+                        value=True,
+                    )
+                    smart_btn = gr.Button("Сгенерировать Smart 3D", variant="primary")
+                with gr.Column(scale=1):
+                    smart_image = gr.Image(label="Промежуточная 2D-картинка", type="pil")
+                    smart_viewer = gr.Model3D(
+                        label="Превью меша", clear_color=[0.07, 0.07, 0.09, 1]
+                    )
+                    smart_file = gr.File(label="Скачать")
+
+            smart_btn.click(
+                fn=smart_generate_mesh,
+                inputs=[
+                    smart_prompt,
+                    smart_negative,
+                    smart_seed,
+                    smart_image_steps,
+                    smart_mesh_steps,
+                    smart_mesh_guidance,
+                    smart_resolution,
+                    smart_format,
+                    smart_cleanup,
+                ],
+                outputs=[smart_image, smart_viewer, smart_file],
             )
 
         gr.Markdown(
             "_2D backbone: Stable Diffusion Turbo · "
             "3D backbone: ShapE · "
-            "Custom: MeshMindRefiner (transformer latent refiner)._"
+            "Custom: MeshMindRefiner (transformer latent refiner) + cleanup pipeline._"
         )
 
     return demo
 
 
 if __name__ == "__main__":
+    _warmup_pipeline_async()
     build_app().launch(server_name="0.0.0.0")
