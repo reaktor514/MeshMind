@@ -27,6 +27,9 @@ class TextToImage:
             return self._pipe
         from diffusers import AutoPipelineForText2Image
 
+        from meshmind.utils.perf import configure_threads, optimize_diffusers_pipe
+
+        configure_threads()
         pipe = AutoPipelineForText2Image.from_pretrained(
             self.config.t2i_model_id,
             torch_dtype=self.config.resolve_dtype(),
@@ -34,6 +37,7 @@ class TextToImage:
         )
         pipe.set_progress_bar_config(disable=True)
         pipe = pipe.to(self.config.resolve_device())
+        pipe = optimize_diffusers_pipe(pipe)
         self._pipe = pipe
         return pipe
 

@@ -6,6 +6,7 @@ accelerate>=0.27.0
 safetensors>=0.4.0
 huggingface_hub>=0.20.0
 trimesh>=4.0.0
+scipy>=1.11.0
 Pillow>=10.0.0
 numpy>=1.24.0,<2.0.0
 gradio>=4.20.0

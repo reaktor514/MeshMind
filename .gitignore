@@ -55,3 +55,4 @@ flagged/
 # Logs
 *.log
 logs/
+.gradio/

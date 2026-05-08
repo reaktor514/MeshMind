@@ -21,6 +21,9 @@ class ImageToMesh:
             return self._pipe
         from diffusers import ShapEImg2ImgPipeline
 
+        from meshmind.utils.perf import configure_threads, optimize_diffusers_pipe
+
+        configure_threads()
         pipe = ShapEImg2ImgPipeline.from_pretrained(
             self.config.i2m_model_id,
             torch_dtype=self.config.resolve_dtype(),
@@ -28,6 +31,7 @@ class ImageToMesh:
         )
         pipe.set_progress_bar_config(disable=True)
         pipe = pipe.to(self.config.resolve_device())
+        pipe = optimize_diffusers_pipe(pipe)
         self._pipe = pipe
         return pipe
 
