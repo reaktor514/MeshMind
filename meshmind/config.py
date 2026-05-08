@@ -53,6 +53,18 @@ class MeshMindConfig:
     t2m_model_id: str = field(default_factory=lambda: _env("T2M_MODEL", "openai/shap-e"))
     i2m_model_id: str = field(default_factory=lambda: _env("I2M_MODEL", "openai/shap-e-img2img"))
 
+    # TripoSR image→mesh backbone (feed-forward LRM, much sharper than ShapE-img2img
+    # for complex prompts). Vendored under ``meshmind._tsr``.
+    triposr_model_id: str = field(
+        default_factory=lambda: _env("TRIPOSR_MODEL", "stabilityai/TripoSR")
+    )
+    triposr_mc_resolution: int = field(
+        default_factory=lambda: _env_int("TRIPOSR_MC_RESOLUTION", 192 if _FAST else 256)
+    )
+    triposr_chunk_size: int = field(
+        default_factory=lambda: _env_int("TRIPOSR_CHUNK_SIZE", 4096 if _FAST else 8192)
+    )
+
     # Inference defaults
     image_size: int = field(
         default_factory=lambda: _env_int("IMAGE_SIZE", 256 if _FAST else 512)

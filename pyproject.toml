@@ -48,6 +48,9 @@ exclude = ["tests*"]
 [tool.ruff]
 line-length = 100
 target-version = "py310"
+# ``meshmind/_tsr`` is vendored from VAST-AI-Research/TripoSR (MIT). We do not
+# lint third-party code as if it were ours.
+extend-exclude = ["meshmind/_tsr"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "B", "UP"]

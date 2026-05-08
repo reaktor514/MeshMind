@@ -4,11 +4,13 @@ Run with::
 
     python app.py
 
-The UI exposes three tabs:
+The UI exposes four tabs:
 
 * **2D Generation** — text + optional reference image -> PNG.
-* **3D Generation** — text + optional reference image -> ``.obj`` / ``.glb``.
-* **Smart 3D** — text -> 2D image -> 3D mesh (better for complex prompts).
+* **3D Generation** — text + optional reference image -> ``.obj`` / ``.glb`` (ShapE backend).
+* **Smart 3D (ShapE)** — text -> 2D image -> 3D mesh via ShapE-img2img.
+* **Smart 3D (TripoSR)** — text -> 2D image -> 3D mesh via TripoSR (LRM, much
+  sharper geometry on complex prompts).
 """
 
 from __future__ import annotations
@@ -161,6 +163,35 @@ def smart_generate_mesh(
         steps=_safe_int(mesh_steps),
         guidance=_safe_float(mesh_guidance),
         resolution=_safe_int(resolution),
+        cleanup=bool(cleanup),
+        return_image=True,
+    )
+    out = _export_mesh(mesh, fmt)
+    return image, out, out
+
+
+def triposr_generate_mesh(
+    prompt: str,
+    negative_prompt: str,
+    seed,  # noqa: ANN001
+    image_steps,  # noqa: ANN001
+    mc_resolution,  # noqa: ANN001
+    foreground_ratio,  # noqa: ANN001
+    remove_bg: bool,
+    fmt: str,
+    cleanup: bool,
+):  # noqa: ANN201
+    if not prompt or not prompt.strip():
+        raise gr.Error("Введи текстовый промпт")
+    pipe = _pipeline()
+    mesh, image = pipe.smart_text_to_mesh_triposr(
+        prompt=prompt.strip(),
+        negative_prompt=(negative_prompt or "").strip() or None,
+        image_seed=_safe_int(seed),
+        image_steps=_safe_int(image_steps),
+        mc_resolution=_safe_int(mc_resolution),
+        foreground_ratio=_safe_float(foreground_ratio, 0.85) or 0.85,
+        remove_bg=bool(remove_bg),
         cleanup=bool(cleanup),
         return_image=True,
     )
@@ -336,9 +367,83 @@ def build_app() -> gr.Blocks:
                 outputs=[smart_image, smart_viewer, smart_file],
             )
 
+        with gr.Tab("Smart 3D (TripoSR)"):
+            gr.Markdown(
+                "**Лучший вариант для сложных промптов.** "
+                "Сначала рисуем 2D-картинку через SD-Turbo, потом отдаём её "
+                "в TripoSR (LRM, не диффузия). На сложных монстрах / персонажах "
+                "геометрия выходит заметно чище, чем у ShapE-img2img."
+            )
+            with gr.Row():
+                with gr.Column(scale=1):
+                    tsr_prompt = gr.Textbox(
+                        label="Промпт",
+                        placeholder="a terrifying horror monster, sharp teeth, glowing eyes",
+                        lines=2,
+                    )
+                    tsr_negative = gr.Textbox(
+                        label="Negative prompt",
+                        placeholder="low quality, blurry, watermark, text",
+                        lines=1,
+                    )
+                    with gr.Row():
+                        tsr_seed = gr.Number(label="Seed", value=None, precision=0)
+                        tsr_image_steps = gr.Number(label="Image steps", value=4, precision=0)
+                        tsr_mc_resolution = gr.Slider(
+                            label="MC resolution",
+                            minimum=128,
+                            maximum=320,
+                            step=32,
+                            value=192,
+                        )
+                    with gr.Row():
+                        tsr_foreground_ratio = gr.Slider(
+                            label="Foreground ratio",
+                            minimum=0.5,
+                            maximum=1.0,
+                            step=0.05,
+                            value=0.85,
+                        )
+                        tsr_remove_bg = gr.Checkbox(
+                            label="Remove background (rembg)",
+                            value=False,
+                        )
+                    tsr_format = gr.Radio(
+                        label="Формат",
+                        choices=["glb", "obj", "ply", "stl"],
+                        value="glb",
+                    )
+                    tsr_cleanup = gr.Checkbox(
+                        label="Post-processing меша",
+                        value=True,
+                    )
+                    tsr_btn = gr.Button("Сгенерировать через TripoSR", variant="primary")
+                with gr.Column(scale=1):
+                    tsr_image = gr.Image(label="Промежуточная 2D-картинка", type="pil")
+                    tsr_viewer = gr.Model3D(
+                        label="Превью меша", clear_color=[0.07, 0.07, 0.09, 1]
+                    )
+                    tsr_file = gr.File(label="Скачать")
+
+            tsr_btn.click(
+                fn=triposr_generate_mesh,
+                inputs=[
+                    tsr_prompt,
+                    tsr_negative,
+                    tsr_seed,
+                    tsr_image_steps,
+                    tsr_mc_resolution,
+                    tsr_foreground_ratio,
+                    tsr_remove_bg,
+                    tsr_format,
+                    tsr_cleanup,
+                ],
+                outputs=[tsr_image, tsr_viewer, tsr_file],
+            )
+
         gr.Markdown(
             "_2D backbone: Stable Diffusion Turbo · "
-            "3D backbone: ShapE · "
+            "3D backbones: ShapE / TripoSR · "
             "Custom: MeshMindRefiner (transformer latent refiner) + cleanup pipeline._"
         )
 

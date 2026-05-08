@@ -18,6 +18,7 @@ if TYPE_CHECKING:
     from meshmind.models.refiner import MeshMindRefiner
     from meshmind.models.text_to_image import TextToImage
     from meshmind.models.text_to_mesh import TextToMesh
+    from meshmind.models.triposr_image_to_mesh import TripoSRImageToMesh
 
 
 @dataclass
@@ -45,6 +46,7 @@ class MeshMindPipeline:
         self._i2i: ImageToImage | None = None
         self._t2m: TextToMesh | None = None
         self._i2m: ImageToMesh | None = None
+        self._triposr: TripoSRImageToMesh | None = None
         self._refiner: MeshMindRefiner | None = None
 
     @classmethod
@@ -82,6 +84,15 @@ class MeshMindPipeline:
 
             self._i2m = ImageToMesh(self.config)
         return self._i2m
+
+    @property
+    def triposr(self) -> TripoSRImageToMesh:
+        """Lazy TripoSR (LRM) image→mesh backbone. Sharper than ShapE-img2img."""
+        if self._triposr is None:
+            from meshmind.models.triposr_image_to_mesh import TripoSRImageToMesh
+
+            self._triposr = TripoSRImageToMesh(self.config)
+        return self._triposr
 
     @property
     def refiner(self) -> MeshMindRefiner:
@@ -196,6 +207,76 @@ class MeshMindPipeline:
             resolution=resolution,
         )
         return self._maybe_cleanup(mesh, cleanup, cleanup_options)
+
+    def image_to_mesh_triposr(
+        self,
+        reference: Image,
+        *,
+        mc_resolution: int | None = None,
+        foreground_ratio: float = 0.85,
+        remove_bg: bool = False,
+        cleanup: bool = False,
+        cleanup_options: CleanupOptions | None = None,
+    ) -> trimesh.Trimesh:
+        """Single-image → mesh via TripoSR (feed-forward LRM).
+
+        Use this when ShapE-img2img collapses on complex/cinematic prompts.
+        """
+        mesh = self.triposr.generate(
+            reference=reference,
+            mc_resolution=mc_resolution,
+            foreground_ratio=foreground_ratio,
+            remove_bg=remove_bg,
+        )
+        return self._maybe_cleanup(mesh, cleanup, cleanup_options)
+
+    def smart_text_to_mesh_triposr(
+        self,
+        prompt: str,
+        *,
+        negative_prompt: str | None = None,
+        image_seed: int | None = None,
+        image_steps: int | None = None,
+        image_guidance: float | None = None,
+        mc_resolution: int | None = None,
+        foreground_ratio: float = 0.85,
+        remove_bg: bool = False,
+        cleanup: bool = True,
+        cleanup_options: CleanupOptions | None = None,
+        return_image: bool = False,
+    ):  # noqa: ANN201
+        """Two-stage *text -> image -> mesh* via SD-Turbo + TripoSR.
+
+        TripoSR is a non-diffusion LRM, so the geometry tends to be much
+        cleaner than the ShapE-img2img variant for sophisticated prompts
+        (fantasy creatures, characters, props with multiple parts).
+
+        Returns the mesh by default; pass ``return_image=True`` to also get
+        the intermediate :class:`PIL.Image.Image`.
+        """
+        if not prompt or not prompt.strip():
+            raise ValueError("smart_text_to_mesh_triposr requires a non-empty prompt")
+
+        images = self.t2i.generate(
+            prompt=prompt,
+            negative_prompt=negative_prompt,
+            num_images=1,
+            seed=image_seed,
+            steps=image_steps,
+            guidance=image_guidance,
+        )
+        reference = images[0]
+
+        mesh = self.triposr.generate(
+            reference=reference,
+            mc_resolution=mc_resolution,
+            foreground_ratio=foreground_ratio,
+            remove_bg=remove_bg,
+        )
+        mesh = self._maybe_cleanup(mesh, cleanup, cleanup_options)
+        if return_image:
+            return mesh, reference
+        return mesh
 
     def smart_text_to_mesh(
         self,
